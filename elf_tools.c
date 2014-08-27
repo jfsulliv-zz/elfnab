@@ -15,41 +15,6 @@
 
 /* Tools for elfnab to find and fetch ELFs */
 
-/* Continue execution of a program until the ELF 
- * is loaded in memory. This should ONLY be used
- * on a program that is JUST starting its life, 
- * ie one that was fork()'d and exec()'d by us.
- */
-int jump_to_start(pid_t pid) 
-{
-    int status;
-    int ret;
-    int brks_left = 3;
-    struct user_regs_struct regs;
-    do {
-        // Step to the next system call entry/exit
-        if(ptrace(PTRACE_SYSCALL, pid, 0, 0)) {
-            return 1;
-        }
-        wait(&status);   
-
-        errno = 0; 
-        ptrace(PTRACE_GETREGS, pid,
-                0, &regs);
-
-        if(errno) {
-            return 1;
-        }  
-        ret = regs.orig_rax;
-        if(ret == SYS_brk)
-            brks_left--;
-    } while(brks_left > 0);
-    // Step once more to exit BRK
-    ptrace(PTRACE_SYSCALL, pid, 0, 0);
-
-    return 0; 
-
-}
 
 /* Reads and four bytes at addr
  * in the process address space of pid,
@@ -106,17 +71,60 @@ int read_header(pid_t pid, void *addr, Elf64_Ehdr *dest)
     return 0; 
 }
 
+/*
+ * Returns a pointer to a malloc'd node that
+ * has null elements.
+ */
+elf_header_list_node *initialize_node(void) 
+{
+    elf_header_list_node *start = (elf_header_list_node *)malloc(
+            sizeof(elf_header_list_node));
+    start->elf = 0;
+    start->next = NULL;
+    start->child_elf = 0;
+    return start;
+}
+
+/* Returns the address of the executable header in the
+ * linked list if it exists, or 0 otherwise.
+ *
+ * Also frees all other nodes and their elements, since
+ * we are only concerned with the executable one.
+ */
+elf_header_list_node *find_executable_header(elf_header_list_node *start)
+{
+    if(!start) 
+        return 0;
+
+    //Traverse the list until an elf header is found with e_type = ET_EXEC  
+    elf_header_list_node *real_elf = start;
+
+    while(real_elf->elf->e_type != ET_EXEC) {
+        if (!real_elf->next) {
+            free_elf_headers(real_elf); // Tidy up
+        }
+        elf_header_list_node *next = real_elf->next;
+        if(real_elf->elf)
+            free(real_elf->elf);
+        if(real_elf)
+            free(real_elf);
+        real_elf = next;
+    }
+
+    free_elf_headers(real_elf->next);
+
+    return real_elf;
+}
+
 /* Finds the address of the ELF header(s) in the given
  * process address space. The process must already be
  * attached to with ptrace by the caller.
  *
  * Creates a linked list of ELF headers.
  *
- * Returns:
- *  num_headers the number of headers found on success
- *  -1 if no headers are found 
+ * Returns the address of the start node, or 0 on failure.
  */
-int find_possible_elf_headers(pid_t pid, struct elf_header_list_node *node) 
+elf_header_list_node *find_possible_elf_headers(pid_t pid) 
 {
     // Most ELF headers (on x86_64) are loaded at 0x400000
     // but they can be loaded _anywhere_ that is page aligned,
@@ -128,9 +136,9 @@ int find_possible_elf_headers(pid_t pid, struct elf_header_list_node *node)
 
     const char* elf_start = "\177ELF"; 
 
-    int num_headers = 0; 
-
-    elf_header_list_node *start = node;
+    elf_header_list_node *start = NULL;
+    elf_header_list_node *prev = NULL;
+    elf_header_list_node *node = start;
 
     unsigned long long i;
     unsigned long word;
@@ -139,71 +147,58 @@ int find_possible_elf_headers(pid_t pid, struct elf_header_list_node *node)
     // Iterate by page boundary and check for magic ELF value
     for(i = BASE_ADDR; i < MAX_ADDR; i+=PG_SIZE) {
         ret = read_word(pid, (void*)i, &word);
+
         if(!ret && !memcmp(elf_start, (void *)&word, size)) {
             printf("Found possible header at %p\n",(void*)i);
 
             // Add a new node to the list
-            if(node == start) {
-                node->elf = (Elf64_Ehdr*)malloc(sizeof(Elf64_Ehdr));
-                read_header(pid, (void*)i, (void*)node->elf);
-                node->next = NULL;
-                node->child_elf = (void*)i;
-            } else {
-                elf_header_list_node *new = 
-                        (elf_header_list_node*)malloc(
-                        sizeof(elf_header_list_node)); 
-                
-                // Copies the header into our address space
-                new->elf = (Elf64_Ehdr*)malloc(sizeof(Elf64_Ehdr));
-                read_header(pid, (void*)i, (void*)new->elf);
-                new->next = NULL;
-                new->child_elf = (void*)i;
+            node = initialize_node();
+            node->elf = (Elf64_Ehdr *)malloc(sizeof(Elf64_Ehdr));
+            if (read_header(pid, (void *)i, (void *)node->elf))
+                continue;
+            node->child_elf = (void *)i;
 
-                node->next = new;
-                node = new;
-                
+            // Conditionally modify the start and prev references.
+            if (!prev) {
+                // First iteration, start = node = prev (abuse of notation)
+                prev = node;
+                start = node;
+            } else if (!prev->next) {
+                // Second iteration, start = prev < node
+                prev->next = node;
+            } else {
+                // Higher iterations, start < prev < node
+                prev = prev->next;
+                prev->next = node;
             }
-            num_headers++;
+
+            // Increment node pointer
+            node = node->next;
         }
     }
-    return (num_headers ? num_headers : -1);
+
+    return start;
 }
 
 /*
- * Frees all elements of the linked-list as well as their
- * respective Elf64_Ehdr elements.
+ * Recursively frees all elements of the linked-list as well as their
+ * respective elements.
  * Returns:
- *      1 on failure
  *      0 on success
  */
 int free_elf_headers(struct elf_header_list_node *node)
 {
-    elf_header_list_node *start = node;
+    if(!node) 
+        return 1;
 
-    // Get the length of the list
-    int length = 0;
-    while(node != NULL) {
-        node = node->next;
-        length++;
+    if (node->next) {
+        free_elf_headers(node->next);
     }
-
-    if(length == 0) 
-        return 0;       
-
-    int i,j;
-    node = start;
-    for(i = length-1; i >= 0; i--) {
-        j = i;
-        // Traverse to the i'th node
-        while(j > 0) {
-            node = node->next;
-        }
-        if(node->elf)
-            free(node->elf);
-        if(node)
-            free(node);
-    }
-
+    
+    if(node->elf)
+        free(node->elf);
+    if(node)
+        free(node);
     return 0;
 }
 

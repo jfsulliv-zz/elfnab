@@ -7,5 +7,7 @@ typedef struct elf_header_list_node {
 } elf_header_list_node;
 
 int jump_to_start(pid_t pid);
-int find_possible_elf_headers(pid_t pid, struct elf_header_list_node *elf_headers);
+elf_header_list_node *initialize_node(void);
+elf_header_list_node *find_executable_header(elf_header_list_node *start);
+elf_header_list_node *find_possible_elf_headers(pid_t pid);
 int free_elf_headers(struct elf_header_list_node *node);
