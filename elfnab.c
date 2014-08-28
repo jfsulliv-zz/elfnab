@@ -1,11 +1,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <signal.h>
+#include <errno.h>
 #include <ctype.h>
 #include <unistd.h>
 #include <sys/ptrace.h>
 #include <sys/wait.h>
 #include <sys/types.h>
+#include <sys/stat.h>
 #include <elf.h>
 
 #include "elf_tools.h"
@@ -20,6 +22,32 @@
 int print_usage(char *name)
 {
     printf("USAGE: %s [-i PID | -p PROGRAM ARGUMENTS | -h ]\n", name);
+    return 0;
+}
+
+/*
+ * Writes num bytes to the file filename, creating it 
+ * if it does not exist.
+ * 
+ */
+int write_to_file(char *filename, char *buf, size_t num)
+{
+    FILE *fp;
+    fp = fopen(filename, "wb");
+    fwrite(buf, num, sizeof(char), fp);
+    int fd = fileno(fp);
+
+    
+    // Set execution bit
+    int flags = 0;
+    flags |= S_IXUSR;
+    flags |= S_IRUSR;
+    flags |= S_IXGRP;
+    flags |= S_IRGRP;
+
+    fchmod(fd, flags);
+    fclose(fp);
+
     return 0;
 }
 
@@ -73,14 +101,16 @@ pid_t spawn_and_attach_process(char **child_argv)
 
 /* 
  * Scans the process for the real ELF header and
- * returns a pointer to a local copy of it.
+ * returns a pointer to an elf_header_list node,
+ * which contains a copy of the Ehdr, Phdr, and the child
+ * address of them.
  *
  * Returns:
  *      *elf_header on success
  *      0 on failure
  *
  */
-Elf64_Ehdr *get_header(pid_t pid)
+elf_header_list_node *get_header(pid_t pid)
 {
     // Populate a linked-list with the possible elf headers.
     elf_header_list_node *start = find_possible_elf_headers(pid);
@@ -91,25 +121,44 @@ Elf64_Ehdr *get_header(pid_t pid)
         goto fail;
     }
 
-    // Finds the node that has the real header, and frees the rest.
-    elf_header_list_node *real_elf = find_executable_header(start);
-    if(!real_elf) {
-        perror("Failed to find an executable ELF header.\n");
-        goto fail;
+    elf_header_list_node *real_elf = start;
+
+    // Try to find one with a valid program header
+    while(real_elf) {
+        real_elf->shdr = find_elf_shdr(pid, real_elf);
+        if(!real_elf->shdr) {
+            printf("No section header found for %p\n",real_elf->child_elf);
+        }
+
+        real_elf->phdr = find_elf_phdr(pid, real_elf);
+        if(!real_elf->phdr) {
+            printf("No program header found for %p - invalid Ehdr\n",real_elf->child_elf);
+            // Remove this node and increment ptr
+            if(real_elf->shdr)
+                free(real_elf->shdr);
+            if(real_elf->elf)
+                free(real_elf->elf);
+            free(real_elf);
+            real_elf = real_elf->next;
+        } else {
+            break;
+        }
+
     }
-    printf("Found the executable header at %p\n",real_elf->child_elf);
-    Elf64_Ehdr *hdr = real_elf->elf;
-    if(real_elf)
-        free(real_elf);
-    return hdr;
+    if(!real_elf)
+        goto fail;
+
+    // Free any later nodes
+    if(real_elf->next)
+        free_elf_headers(real_elf->next);
+
+    printf("Using header %p\n",real_elf->child_elf);
+    return real_elf;
 
 fail:
-    {
-        // Free all elements of the linked-list
-        if(start) 
-            free_elf_headers(start);
-        return 0;
-    }
+    if(start) 
+        free_elf_headers(start);
+    return 0;
 }
 
 int main(int argc, char **argv, char **envp)
@@ -122,13 +171,15 @@ int main(int argc, char **argv, char **envp)
     int mode;
     mode = 0;
 
+
+    char *filename = NULL;
     char c;
     char *ival = NULL;
     int child_index = 0;
 
     opterr = 0;
 
-    while((c = getopt(argc, argv, "i:p:")) != -1) {
+    while((c = getopt(argc, argv, "i:p:o:")) != -1) {
         switch(c) {
             case 'i':
                 mode |= PID_MODE; 
@@ -137,6 +188,9 @@ int main(int argc, char **argv, char **envp)
             case 'p':
                 mode |= PROGR_MODE;
                 child_index = optind - 1;
+                break;
+            case 'o':
+                filename = optarg;
                 break;
             default:
                 print_usage(argv[0]);
@@ -148,6 +202,10 @@ int main(int argc, char **argv, char **envp)
     if(!mode) {
         print_usage(argv[0]);
         exit(1);
+    }
+
+    if(!filename) {
+        filename = "a.out";
     }
 
     pid_t pid;
@@ -175,12 +233,23 @@ int main(int argc, char **argv, char **envp)
 
     }
 
-    Elf64_Ehdr *hdr = get_header(pid);
+    elf_header_list_node *hdr = get_header(pid);
     if(!hdr)
-        return 1;
+        exit(1);
 
+    int size = 0;
+    char *text;
+    size = read_program(pid, hdr, &text);
+    if(text) {
+        printf("Writing %d bytes to file %s\n",size,filename);
+        write_to_file(filename, text, size);
+        free(text);
+    } else {
+        printf("Failed to read ELF. No file written.\n");
+    } 
     if(hdr) 
-        free(hdr);
+        free_elf_headers(hdr);
+
     return 0;
 }
 
