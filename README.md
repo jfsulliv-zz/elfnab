@@ -5,6 +5,10 @@ Recovers a user-readable ELF file from a user-executable ELF file
 or running process. This can effectively create a readable copy of a 
 non-readable but executable file.
 
+This is a proof-of-concept demonstration that Linux's read permission
+means nothing if the file is executable.
+
+
 elfnab works by attaching to the process (after spawning it with execl 
 if need be) and reading the ELF header and program table entries from
 the child's address space, and writing this into a valid ELF file. 
