@@ -1,7 +1,7 @@
 elfnab
 ======
 
-Recovers a user-readable ELF file from a user-executable ELF file
+Recovers a user-readable ELF32/64 file from a user-executable ELF32/64 file
 or running process. This can effectively create a readable copy of a 
 non-readable but executable file.
 
@@ -19,6 +19,9 @@ This is more of a proof of concept than anything but has potential use
 for reverse engineering a program that an administrator has made executable
 but non-readable.
 
-Currently only works with x86_64 and 64-bit executables, I may extend it
-to support 32-bit executables as well.
 
+Current implementation of compatibility for ELF32 and ELF64 is ugly,
+I may attempt to improve this in the future.
+
+
+Not a robust program, this is just for fun. 
