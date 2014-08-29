@@ -509,8 +509,6 @@ elf_list *find_possible_elf_headers(pid_t pid)
             else
                 node->elf->bits = 64;
 
-            printf("%d\n",node->elf->bits);
-
             if(node->elf->bits == 32) { 
                 node->elf->ehdr = (void *)malloc(sizeof(Elf32_Ehdr));
                 node->elf->ehdr_size = sizeof(Elf32_Ehdr);

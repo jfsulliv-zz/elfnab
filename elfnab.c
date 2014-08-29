@@ -174,6 +174,7 @@ elf_list *get_elf_data(pid_t pid)
     node->next = NULL;
 
     printf("Using header %p\n",real_elf->child_ehdr);
+    printf("ELF%d executable binary\n",real_elf->bits);
     return node;
 
 fail:
