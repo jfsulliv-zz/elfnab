@@ -15,10 +15,10 @@
 
 /* Tools for elfnab to find and fetch ELFs */
 
-
-/* Reads and four bytes at addr
- * in the process address space of pid,
- * and writes it into memory at desti.
+/* Reads a word in the process address space of pid,
+ * and writes it into memory at dest.
+ *
+ *
  * Returns: 
  *      1 on failure
  *      0 on success
@@ -36,6 +36,7 @@ int read_word(pid_t pid, void *addr, unsigned long *dest)
     if(errno) {
         return 1;
     }
+
     *dest = ret;
 
     return 0;
@@ -43,8 +44,6 @@ int read_word(pid_t pid, void *addr, unsigned long *dest)
 
 /* Reads num bytes from addr in pid,
  * and copies it to dest.
- *
- * NOT memory safe. You _can_ overflow dest.
  *
  * Returns:
  *
@@ -76,17 +75,68 @@ int read_from_process(pid_t pid, void *addr, void *dest, size_t num)
 }
 
 /*
- * Returns a pointer to a malloc'd node that
- * has null elements.
+ * Scans the process text for the Section Header,
+ *
+ * Returns:
+ *      A pointer to a local copy of the program header table,
+ *      or 0 on failure.
+ *
  */
-elf_header_list_node *initialize_node(void) 
+Elf64_Shdr *find_elf64_shdr(pid_t pid, elf_file *elf)
 {
-    elf_header_list_node *start = (elf_header_list_node *)malloc(
-            sizeof(elf_header_list_node));
-    start->elf = 0;
-    start->next = NULL;
-    start->child_elf = 0;
-    return start;
+    if(!elf) 
+        return 0;
+    Elf64_Ehdr *header = (Elf64_Ehdr *)elf->ehdr;
+    if(!header)
+        return 0;
+
+    unsigned long offset = (unsigned long)header->e_shoff;
+    if(!offset)
+        return 0;
+
+    unsigned long shdr_addr = offset + (unsigned long)elf->child_ehdr;
+    int p_sz = sizeof(Elf64_Shdr) * header->e_shnum;
+    if(p_sz >= getpagesize())
+        return 0;
+    else if (!p_sz)
+        return 0;
+
+    void* buf = malloc(p_sz);
+
+    if(read_from_process(pid, (void *)shdr_addr, (void *)buf, p_sz)) {
+        free(buf);
+        return 0;
+    }
+
+    return buf;
+}
+Elf32_Shdr *find_elf32_shdr(pid_t pid, elf_file *elf)
+{
+    if(!elf) 
+        return 0;
+    Elf32_Ehdr *header = (Elf32_Ehdr *)elf->ehdr;
+    if(!header)
+        return 0;
+
+    unsigned long offset = (unsigned long)header->e_shoff;
+    if(!offset)
+        return 0;
+
+    unsigned long shdr_addr = offset + (unsigned long)elf->child_ehdr;
+    int p_sz = sizeof(Elf32_Shdr) * header->e_shnum;
+    if(p_sz >= getpagesize())
+        return 0;
+    else if (!p_sz)
+        return 0;
+
+    void* buf = malloc(p_sz);
+
+    if(read_from_process(pid, (void *)shdr_addr, (void *)buf, p_sz)) {
+        free(buf);
+        return 0;
+    }
+
+    return buf;
 }
 
 /*
@@ -97,12 +147,11 @@ elf_header_list_node *initialize_node(void)
  *      or 0 on failure.
  *
  */
-Elf64_Phdr *find_elf_phdr(pid_t pid, elf_header_list_node *node)
+Elf64_Phdr *find_elf64_phdr(pid_t pid, elf_file *elf)
 {
-
-    if(!node) 
+    if(!elf) 
         return 0;
-    Elf64_Ehdr *header = node->elf;
+    Elf64_Ehdr *header = (Elf64_Ehdr *)elf->ehdr;
     if(!header)
         return 0;
 
@@ -110,14 +159,14 @@ Elf64_Phdr *find_elf_phdr(pid_t pid, elf_header_list_node *node)
     if(!offset)
         return 0;
 
-    unsigned long phdr_addr = offset + (unsigned long)node->child_elf;
+    unsigned long phdr_addr = offset + (unsigned long)elf->child_ehdr;
     int p_sz = sizeof(Elf64_Phdr) * header->e_phnum;
     if(p_sz >= getpagesize())
         return 0;
     else if (!p_sz)
         return 0;
 
-    Elf64_Phdr* buf = malloc(p_sz);
+    void* buf = malloc(p_sz);
 
     if(read_from_process(pid, (void *)phdr_addr, (void *)buf, p_sz)) {
         free(buf);
@@ -125,80 +174,115 @@ Elf64_Phdr *find_elf_phdr(pid_t pid, elf_header_list_node *node)
     }
 
     return buf;
-
 }
-
-/*
- * Scans the process text for the Section Header,
- *
- * Returns:
- *      A pointer to a local copy of the section header table,
- *      or 0 on failure.
- *
- */
-Elf64_Shdr *find_elf_shdr(pid_t pid, elf_header_list_node *node)
+Elf32_Phdr *find_elf32_phdr(pid_t pid, elf_file *elf)
 {
-
-    if(!node) 
+    if(!elf) 
         return 0;
-    Elf64_Ehdr *header = node->elf;
+    Elf32_Ehdr *header = (Elf32_Ehdr *)elf->ehdr;
     if(!header)
         return 0;
 
-    unsigned long offset = (unsigned long)header->e_shoff;
+    unsigned long offset = (unsigned long)header->e_phoff;
     if(!offset)
         return 0;
 
-    unsigned long shdr_addr = offset + (unsigned long)node->child_elf;
-    int s_sz = sizeof(Elf64_Shdr) * header->e_shnum;
-    if(s_sz >= getpagesize())
+    unsigned long phdr_addr = offset + (unsigned long)elf->child_ehdr;
+    int p_sz = sizeof(Elf32_Phdr) * header->e_phnum;
+    if(p_sz >= getpagesize())
         return 0;
-    else if (!s_sz)
+    else if (!p_sz)
         return 0;
 
-    Elf64_Shdr* buf = malloc(s_sz);
+    void* buf = malloc(p_sz);
 
-    if(read_from_process(pid, (void *)shdr_addr, (void *)buf, s_sz)) {
+    if(read_from_process(pid, (void *)phdr_addr, (void *)buf, p_sz)) {
         free(buf);
         return 0;
     }
 
     return buf;
-
 }
 
 /*
  * Returns the size of the program.
  *
  */
-unsigned long get_program_size(pid_t pid, elf_header_list_node *node)
+unsigned long get_program64_size(pid_t pid, elf_file *elf)
 {
-    if(!node || !node->elf || !node->phdr || !node->child_elf)
+    if(!elf || !elf->ehdr || !elf->phdr)
         return 0;
 
     int i = 0;
     unsigned long size = 0;
     unsigned long this_size = 0;
 
-    // Check for the upper bound of a program entry
-    for(i = 0; i < node->elf->e_phnum; i++) {
-        Elf64_Phdr *phdr = &node->phdr[i];
-        if(phdr->p_memsz > phdr->p_filesz)
-            this_size = phdr->p_memsz;
-        else
-            this_size = phdr->p_filesz;
+    Elf64_Ehdr *ehdr = elf->ehdr;
+    Elf64_Phdr *phdr = elf->phdr;
+    Elf64_Phdr *this_phdr;
+    Elf64_Shdr *shdr = elf->shdr;
 
-        if(this_size + phdr->p_offset > size)
-            size = this_size + phdr->p_offset;
+    // Check for the upper bound of a program entry
+    for(i = 0; i < ehdr->e_phnum; i++) {
+        this_phdr = &phdr[i];
+        if(this_phdr->p_memsz > this_phdr->p_filesz)
+            this_size = this_phdr->p_memsz;
+        else
+            this_size = this_phdr->p_filesz;
+
+        if(this_size + this_phdr->p_offset > size)
+            size = this_size + this_phdr->p_offset;
     }
 
     // Check to see if the Section Table header is higher than the above
     unsigned long shdr_size = 0;
-    if(node->shdr) {
-        shdr_size = node->elf->e_shnum * sizeof(Elf64_Shdr);
+    if(shdr) {
+        shdr_size = ehdr->e_shnum * sizeof(Elf64_Shdr);
         this_size = shdr_size;
-        if(this_size + node->shdr->sh_offset > size)
-            size = node->shdr->sh_offset + size;
+        if(this_size + shdr->sh_offset > size)
+            size = shdr->sh_offset + size;
+    }
+
+    printf("Program size : %lu bytes\n",size);
+    return size;
+}
+/*
+ * Returns the size of the program.
+ *
+ */
+unsigned long get_program32_size(pid_t pid, elf_file *elf)
+{
+    if(!elf || !elf->ehdr || !elf->phdr)
+        return 0;
+
+    int i = 0;
+    unsigned long size = 0;
+    unsigned long this_size = 0;
+
+    Elf32_Ehdr *ehdr = elf->ehdr;
+    Elf32_Phdr *phdr = elf->phdr;
+    Elf32_Phdr *this_phdr;
+    Elf32_Shdr *shdr = elf->shdr;
+
+    // Check for the upper bound of a program entry
+    for(i = 0; i < ehdr->e_phnum; i++) {
+        this_phdr = &phdr[i];
+        if(this_phdr->p_memsz > this_phdr->p_filesz)
+            this_size = this_phdr->p_memsz;
+        else
+            this_size = this_phdr->p_filesz;
+
+        if(this_size + this_phdr->p_offset > size)
+            size = this_size + this_phdr->p_offset;
+    }
+
+    // Check to see if the Section Table header is higher than the above
+    unsigned long shdr_size = 0;
+    if(shdr) {
+        shdr_size = ehdr->e_shnum * sizeof(Elf32_Shdr);
+        this_size = shdr_size;
+        if(this_size + shdr->sh_offset > size)
+            size = shdr->sh_offset + size;
     }
 
     printf("Program size : %lu bytes\n",size);
@@ -212,16 +296,16 @@ unsigned long get_program_size(pid_t pid, elf_header_list_node *node)
  * Returns 0 on failure, and the bytes read on success.. 
  *
  */
-unsigned long read_program(pid_t pid, elf_header_list_node *node, char **buf)
+unsigned long read_program64(pid_t pid, elf_file *elf, char **buf)
 {
-    if(!node || !node->elf || !node->phdr || !node->child_elf)
+    if(!elf || !elf->ehdr || !elf->phdr)
         return 0;
 
-    int prog_size = get_program_size(pid, node);
+    int prog_size = get_program64_size(pid, elf);
 
-    Elf64_Ehdr *ehdr = node->elf;
-    Elf64_Phdr *phdr = node->phdr;
-    Elf64_Shdr *shdr = node->shdr;
+    Elf64_Ehdr *ehdr = elf->ehdr;
+    Elf64_Phdr *phdr = elf->phdr;
+    Elf64_Shdr *shdr = elf->shdr;
 
     *buf = (char *)calloc(prog_size, sizeof(char));
     char *bufptr = *buf;
@@ -247,11 +331,11 @@ unsigned long read_program(pid_t pid, elf_header_list_node *node, char **buf)
         printf("Segment %d type 0x%08x flag %d at 0x%08x - 0x%08x ",i+1, (int)cur->p_type, (int)cur->p_flags, (unsigned int )p_addr, (unsigned int)(p_addr + size));
         if(cur->p_type == PT_LOAD || cur->p_type == PT_DYNAMIC) {
             if (read_from_process(pid, (void *)p_addr, &bufptr[cur->p_offset], size)) {
-                free(bufptr);
-                *buf = 0;
-                return 0;
+                printf("FAILED to read ");
+            } else {
+                printf("wrote at ");
             }
-            printf("wrote at %d - %d\n", (unsigned int)cur->p_offset, (unsigned int)(cur->p_offset+size));
+            printf("%d - %d\n", (unsigned int)cur->p_offset, (unsigned int)(cur->p_offset+size));
         } else {
             printf("nothing to write\n");
         } 
@@ -263,7 +347,7 @@ unsigned long read_program(pid_t pid, elf_header_list_node *node, char **buf)
         printf("Section Header\n");
         printf("-----\n");
         size = sizeof(Elf64_Shdr) * ehdr->e_shnum;
-        s_addr = (unsigned long)node->child_elf +
+        s_addr = (unsigned long)ehdr +
             (unsigned long)ehdr->e_shoff;
         printf("Section Header from 0x%08x - 0x%08x ", (unsigned int)s_addr, (unsigned int)(s_addr + size));
         printf("wrote to %d - %d\n", (unsigned int)ehdr->e_shoff, (unsigned int)(ehdr->e_shoff+size));
@@ -286,37 +370,95 @@ unsigned long read_program(pid_t pid, elf_header_list_node *node, char **buf)
 
     return prog_size;
 }
-
-/* Returns the address of the executable header in the
- * linked list if it exists, or 0 otherwise.
- *
- * Also frees all other nodes and their elements, since
- * we are only concerned with the executable one.
- */
-elf_header_list_node *find_executable_header(elf_header_list_node *start)
+unsigned long read_program32(pid_t pid, elf_file *elf, char **buf)
 {
-    if(!start) 
+    if(!elf || !elf->ehdr || !elf->phdr)
         return 0;
 
-    //Traverse the list until an elf header is found with e_type = ET_EXEC  
-    elf_header_list_node *real_elf = start;
+    int prog_size = get_program32_size(pid, elf);
 
-    while(real_elf->elf->e_type != ET_EXEC) {
-        printf("Not %p\n",real_elf->child_elf);
-        if (!real_elf->next) {
-            free_elf_headers(real_elf); // Tidy up
-            return 0;
-        }
-        elf_header_list_node *next = real_elf->next;
-        if(real_elf->elf)
-            free(real_elf->elf);
-        if(real_elf)
-            free(real_elf);
-        real_elf = next;
+    Elf32_Ehdr *ehdr = elf->ehdr;
+    Elf32_Phdr *phdr = elf->phdr;
+    Elf32_Shdr *shdr = elf->shdr;
+
+    *buf = (char *)calloc(prog_size, sizeof(char));
+    char *bufptr = *buf;
+    if(!bufptr)
+        return 0;
+
+    // Iterate through the program headers
+    // And read the non-LOAD entries into buf.
+    int i;
+    unsigned long size = 0;
+    int max = ehdr->e_phnum;
+    unsigned long p_addr;
+    unsigned long s_addr;
+
+    // Write all of the program pages 
+    printf("-----\n");
+    printf("Program Header\n");
+    printf("-----\n");
+    for(i = 0; i < max; i ++) {
+        Elf32_Phdr *cur = &phdr[i];
+        size = cur->p_memsz;
+        p_addr = (unsigned long)cur->p_vaddr; 
+        printf("Segment %d type 0x%08x flag %d at 0x%08x - 0x%08x ",i+1, (int)cur->p_type, (int)cur->p_flags, (unsigned int )p_addr, (unsigned int)(p_addr + size));
+        if(cur->p_type == PT_LOAD || cur->p_type == PT_DYNAMIC) {
+            if (read_from_process(pid, (void *)p_addr, &bufptr[cur->p_offset], size)) {
+                printf("FAILED to read at ");
+            } else {
+                printf("wrote at ");
+            }
+            printf("%d - %d\n", (unsigned int)cur->p_offset, (unsigned int)(cur->p_offset+size));
+        } else {
+            printf("nothing to write\n");
+        } 
     }
 
-    free_elf_headers(real_elf->next);
-    return real_elf;
+    // Write the section header table if we could recover it
+    if(shdr) {
+        printf("-----\n");
+        printf("Section Header\n");
+        printf("-----\n");
+        size = sizeof(Elf32_Shdr) * ehdr->e_shnum;
+        s_addr = (unsigned long)ehdr +
+            (unsigned long)ehdr->e_shoff;
+        printf("Section Header from 0x%08x - 0x%08x ", (unsigned int)s_addr, (unsigned int)(s_addr + size));
+        printf("wrote to %d - %d\n", (unsigned int)ehdr->e_shoff, (unsigned int)(ehdr->e_shoff+size));
+        if (read_from_process(pid, (void *)s_addr, &bufptr[ehdr->e_shoff], size)) {
+            free(bufptr);
+            *buf = 0;
+            return 0;
+        }
+    } else {
+        printf("-----\n");
+        printf("No Section Header Table recovered\n");
+        printf("----\n");
+        // Null out the relevant section header data
+        Elf32_Ehdr *temp_ptr = (void *)bufptr;
+        temp_ptr->e_shoff = 0;
+        temp_ptr->e_shnum = 0;
+        temp_ptr->e_shnum = 0;
+        temp_ptr->e_shstrndx = 0;
+    }
+
+    return prog_size;
+}
+
+int is_executable64(pid_t pid, elf_file *elf)
+{
+
+    Elf64_Ehdr *ehdr = elf->ehdr;
+    if(!ehdr)
+        return 0;
+    return ehdr->e_type == ET_EXEC;
+}
+int is_executable32(pid_t pid, elf_file *elf)
+{
+    Elf32_Ehdr *ehdr = elf->ehdr;
+    if(!ehdr)
+        return 0;
+    return ehdr->e_type == ET_EXEC;
 }
 
 /* Finds the address of the ELF header(s) in the given
@@ -327,7 +469,7 @@ elf_header_list_node *find_executable_header(elf_header_list_node *start)
  *
  * Returns the address of the start node, or 0 on failure.
  */
-elf_header_list_node *find_possible_elf_headers(pid_t pid) 
+elf_list *find_possible_elf_headers(pid_t pid) 
 {
     // Most ELF headers (on x86_64) are loaded at 0x400000
     // but they can be loaded _anywhere_ that is page aligned,
@@ -338,37 +480,65 @@ elf_header_list_node *find_possible_elf_headers(pid_t pid)
     int PG_SIZE = getpagesize();
 
     const char* elf_start = "\177ELF"; 
+    const int size = strlen(elf_start);
 
-    elf_header_list_node *start = NULL;
-    elf_header_list_node *prev = NULL;
-    elf_header_list_node *node = start;
+    elf_list *start = NULL;
+    elf_list *prev = NULL;
+    elf_list *node = start;
 
-    unsigned long long i;
+    unsigned long i;
     unsigned long word;
     int ret;
-    int size = strlen(elf_start);
+
     // Iterate by page boundary and check for magic ELF value
     for(i = BASE_ADDR; i < MAX_ADDR; i+=PG_SIZE) {
         ret = read_word(pid, (void *)i, (void *)&word);
-
         if(!ret && !memcmp(elf_start, (void *)&word, size)) {
-
-
             // Add a new node to the list
             node = initialize_node();
-            node->elf = (Elf64_Ehdr *)malloc(sizeof(Elf64_Ehdr));
-            if (read_from_process(pid, (void *)i, (void *)node->elf,
-                        sizeof(Elf64_Ehdr)))
-                continue;
-            node->child_elf = (void *)i;
 
-            if (node->elf->e_type != ET_EXEC) {
-                printf("Discarding non-executable header\n");
-                free(node->elf);
-                free(node);
+            // Try to get the bit size
+            char elf_class = 0;
+            if (read_word(pid, (void *)i+size, (void *)&elf_class)) {
+                delete_list(node);
+                continue;
+            }
+
+            if(elf_class == 1)
+                node->elf->bits = 32;
+            else
+                node->elf->bits = 64;
+
+            printf("%d\n",node->elf->bits);
+
+            if(node->elf->bits == 32) { 
+                node->elf->ehdr = (void *)malloc(sizeof(Elf32_Ehdr));
+                node->elf->ehdr_size = sizeof(Elf32_Ehdr);
+            }
+            else { 
+                node->elf->ehdr = (void *)malloc(sizeof(Elf64_Ehdr));
+                node->elf->ehdr_size = sizeof(Elf64_Ehdr);
+            }
+
+            // Try to read the ELF header
+            if (read_from_process(pid, (void *)i, (void *)node->elf->ehdr,
+                        node->elf->ehdr_size)) {
+                delete_list(node);
+                continue;
+            }
+           
+            int (*is_executable)(pid_t, elf_file *); 
+            if(node->elf->bits == 32)
+                is_executable = &is_executable32;
+            else
+                is_executable = &is_executable64;
+            if(!is_executable(pid, node->elf)) {
+                printf("Discarding non-executable node %p\n",(void*)i);
+                delete_list(node);
                 continue;
             }
             printf("Found possible header at %p\n",(void*)i);
+            node->elf->child_ehdr = (void*)i;
 
             // Conditionally modify the start and prev references.
             if (!prev) {
@@ -391,31 +561,3 @@ elf_header_list_node *find_possible_elf_headers(pid_t pid)
 
     return start;
 }
-
-/*
- * Recursively frees all elements of the linked-list as well as their
- * respective elements.
- * Returns:
- *      0 on success
- */
-int free_elf_headers(struct elf_header_list_node *node)
-{
-    if(!node) 
-        return 1;
-
-    if (node->next) {
-        free_elf_headers(node->next);
-    }
-
-    if(node->elf)
-        free(node->elf);
-    if(node->phdr)
-        free(node->phdr);
-    if(node->shdr)
-        free(node->shdr);
-    if(node)
-        free(node);
-    return 0;
-}
-
-
